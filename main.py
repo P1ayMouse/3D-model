@@ -1,5 +1,4 @@
 import math
-import sys
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
@@ -219,6 +218,27 @@ def perspective(fov_y, aspect, z_near, z_far) -> Mat4:
     m.m[2][2] = (z_far + z_near) / (z_near - z_far)
     m.m[2][3] = (2.0 * z_far * z_near) / (z_near - z_far)
     m.m[3][2] = -1.0
+    return m
+
+def orthographic(left, right, bottom, top, z_near, z_far) -> Mat4:
+    """
+    Orthographic projection matrix.
+
+    Parameters:
+      left, right, bottom, top - view volume bounds
+      z_near, z_far            - positive near/far distances
+
+    Camera convention (same as perspective branch):
+      - camera looks along -Z
+      - visible points in view-space have negative z
+    """
+    m = Mat4.identity()
+    m.m[0][0] = 2.0 / (right - left)
+    m.m[1][1] = 2.0 / (top - bottom)
+    m.m[2][2] = -2.0 / (z_far - z_near)
+    m.m[0][3] = -(right + left) / (right - left)
+    m.m[1][3] = -(top + bottom) / (top - bottom)
+    m.m[2][3] = -(z_far + z_near) / (z_far - z_near)
     return m
 
 def axonometric_isometric() -> Mat4:
@@ -868,9 +888,12 @@ def main():
             proj_m = perspective(math.radians(60.0), RW / RH, 0.1, 100.0)
             use_persp = True
         else:
-            # Axonometric: rotate view space by isometric transform, then use orthographic mapping.
-            vm = axonometric_isometric() @ vm
-            proj_m = Mat4.identity()
+            # Axonometric:
+            # apply isometric rotation in model space (before camera translation),
+            # otherwise camera translation gets rotated too and the model "jumps" on screen.
+            vm = view_m @ (axonometric_isometric() @ model_m)
+            ortho_scale = 1.45
+            proj_m = orthographic(-ortho_scale, ortho_scale, -ortho_scale, ortho_scale, 0.1, 100.0)
             use_persp = False
 
         # ====================================================
@@ -935,14 +958,19 @@ def main():
                     iw1 = 1.0 / c1.w
                     iw2 = 1.0 / c2.w
                 else:
-                    # Axonometric: treat view coords as NDC-ish with scaling
-                    s = 0.7
-                    ndc0x, ndc0y = tp0.x * s, tp0.y * s
-                    ndc1x, ndc1y = tp1.x * s, tp1.y * s
-                    ndc2x, ndc2y = tp2.x * s, tp2.y * s
-                    iw0 = 1.0
-                    iw1 = 1.0
-                    iw2 = 1.0
+                    c0 = proj_m.mul_vec4(Vec4(tp0.x, tp0.y, tp0.z, 1.0))
+                    c1 = proj_m.mul_vec4(Vec4(tp1.x, tp1.y, tp1.z, 1.0))
+                    c2 = proj_m.mul_vec4(Vec4(tp2.x, tp2.y, tp2.z, 1.0))
+
+                    ndc0x, ndc0y = c0.x / c0.w, c0.y / c0.w
+                    ndc1x, ndc1y = c1.x / c1.w, c1.y / c1.w
+                    ndc2x, ndc2y = c2.x / c2.w, c2.y / c2.w
+
+                    # Z-buffer for orthographic projection:
+                    # use -clip_z so closer surfaces have larger values (same compare as perspective branch).
+                    iw0 = -c0.z
+                    iw1 = -c1.z
+                    iw2 = -c2.z
 
                 # NDC -> screen pixels
                 sx0, sy0 = to_screen(ndc0x, ndc0y, RW, RH)
